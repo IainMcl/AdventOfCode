@@ -1,13 +1,13 @@
 package day5
 
 import (
+	"fmt"
+	"math"
 	"strconv"
 	"strings"
+	"sync"
+	"time"
 )
-
-type Seeds struct {
-	Seeds []int
-}
 
 type SourceDestinationMap struct {
 	Source      string
@@ -22,40 +22,63 @@ type Range struct {
 }
 
 func Run(input string, seedsAsRanges bool) string {
-	seeds, sourceDestinationMaps := parseInput(input, seedsAsRanges)
+	ch := make(chan int)
+	mu := sync.Mutex{}
+	var wg sync.WaitGroup
+	seeds, sourceDestinationMaps := parseInput(input)
+	wg.Add(len(seeds) * 100)
 
-	locations := make([]int, len(seeds.Seeds))
-	for i, seed := range seeds.Seeds {
-		starting := "seed"
-		input := seed
-		for range locations {
-			for _, rangeMap := range sourceDestinationMaps {
-				if rangeMap.Source == starting {
-					starting = rangeMap.Destination
-					for _, r := range rangeMap.Ranges {
-						if (input >= r.SourceRangeStart) && (input < r.SourceRangeStart+r.RangeLength) {
-							input = r.DestinationRangeStart + (input - r.SourceRangeStart)
-							break
-						}
-					}
-					// Input not in any of the ranges so the input stays the same
-				}
+	minLocation := math.MaxInt64
+
+	if seedsAsRanges {
+		go getSeedNumbersAsRanges(seeds, ch, &wg)
+	} else {
+		go getSeedNumbers(seeds, ch, &wg)
+	}
+
+	resultCh := make(chan int)
+	go func() {
+		count := 0
+		startTime := time.Now()
+		for seed := range ch {
+			count++
+			if count%1000000 == 0 {
+				fmt.Printf("Count %d: Min location %d: Run duration %s\n", count, minLocation, time.Since(startTime))
 			}
-			break
+			dest := getDestination(seed, &sourceDestinationMaps)
+			// Lock the minLocation
+			mu.Lock()
+			if dest < minLocation {
+				minLocation = dest
+				fmt.Printf("New min location %d\n", minLocation)
+			}
+			mu.Unlock()
 		}
-		locations[i] = input
-	}
-
-	min := locations[0]
-	for _, location := range locations {
-		if location < min {
-			min = location
-		}
-	}
-	return strconv.Itoa(min)
+		// return minLocation
+		resultCh <- minLocation
+	}()
+	result := <-resultCh
+	return fmt.Sprintf("%d", result)
 }
 
-func parseInput(input string, seedsAsRanges bool) (Seeds, []SourceDestinationMap) {
+func getDestination(input int, destMaps *[]SourceDestinationMap) int {
+	starting := "seed"
+	for _, rangeMap := range *destMaps {
+		if rangeMap.Source == starting {
+			starting = rangeMap.Destination
+			for _, r := range rangeMap.Ranges {
+				if (input >= r.SourceRangeStart) && (input < r.SourceRangeStart+r.RangeLength) {
+					input = r.DestinationRangeStart + (input - r.SourceRangeStart)
+					break
+				}
+			}
+			// Input not in any of the ranges so the input stays the same
+		}
+	}
+	return input
+}
+
+func parseInput(input string) ([]int, []SourceDestinationMap) {
 	sections := strings.Split(input, "\r\n\r\n")
 	seedSection := sections[0]
 	seedLine := strings.Split(seedSection, "\n")[0]
@@ -63,12 +86,7 @@ func parseInput(input string, seedsAsRanges bool) (Seeds, []SourceDestinationMap
 	seedLine = strings.TrimSuffix(seedLine, "\r")
 	seedStrings := strings.Split(seedLine, " ")
 
-	var seeds Seeds
-	if seedsAsRanges {
-		seeds = parseSeeedsAsRanges(seedStrings)
-	} else {
-		seeds = parseSeeds(seedStrings)
-	}
+	seeds := parseSeeds(seedStrings)
 
 	sourceDestinationMaps := make([]SourceDestinationMap, len(sections)-1)
 	remainingSections := sections[1:]
@@ -80,40 +98,40 @@ func parseInput(input string, seedsAsRanges bool) (Seeds, []SourceDestinationMap
 	return seeds, sourceDestinationMaps
 }
 
-func parseSeeds(seedStrings []string) Seeds {
-	seeds := Seeds{
-		Seeds: make([]int, len(seedStrings)),
-	}
+func parseSeeds(seedStrings []string) []int {
+	seeds := make([]int, len(seedStrings))
 	for i, seedString := range seedStrings {
 		seed, err := strconv.Atoi(seedString)
 		if err != nil {
 			panic(err)
 		}
-		seeds.Seeds[i] = seed
+		seeds[i] = seed
 	}
 	return seeds
 }
 
-func parseSeeedsAsRanges(seedStrings []string) Seeds {
-	if len(seedStrings)%2 != 0 {
+func getSeedNumbers(seeds []int, ch chan int, wg *sync.WaitGroup) {
+	defer close(ch)
+	defer wg.Done()
+	for _, seed := range seeds {
+		ch <- seed
+	}
+}
+
+func getSeedNumbersAsRanges(seedRanges []int, ch chan int, wg *sync.WaitGroup) {
+	defer close(ch)
+	defer wg.Done()
+	if len(seedRanges)%2 != 0 {
 		panic("Seeds must be even length")
 	}
-	seedsList := make([]int, 0)
-	for i := 0; i < len(seedStrings); i += 2 {
-		start, err := strconv.Atoi(seedStrings[i])
-		if err != nil {
-			panic(err)
-		}
-		r, err := strconv.Atoi(seedStrings[i+1])
-		if err != nil {
-			panic(err)
-		}
+
+	for i := 0; i < len(seedRanges); i += 2 {
+		start := seedRanges[i]
+		r := seedRanges[i+1]
 		for j := 0; j < r; j++ {
-			seedsList = append(seedsList, start+j)
+			ch <- start + j
 		}
 	}
-
-	return Seeds{Seeds: seedsList}
 }
 
 func parseSourceDestinationMap(sectionLines []string) SourceDestinationMap {
